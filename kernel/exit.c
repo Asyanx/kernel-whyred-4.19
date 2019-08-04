@@ -832,7 +832,6 @@ static void check_stack_usage(void)
 static inline void check_stack_usage(void) {}
 #endif
 
-<<<<<<< HEAD
 #ifndef CONFIG_PROFILING
 static BLOCKING_NOTIFIER_HEAD(task_exit_notifier);
 
