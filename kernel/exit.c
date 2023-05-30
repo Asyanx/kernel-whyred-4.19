@@ -826,6 +826,7 @@ static void check_stack_usage(void)
 static inline void check_stack_usage(void) {}
 #endif
 
+<<<<<<< HEAD
 #ifndef CONFIG_PROFILING
 static BLOCKING_NOTIFIER_HEAD(task_exit_notifier);
 
@@ -853,9 +854,12 @@ void profile_task_exit(struct task_struct *tsk)
 #endif
 
 void do_exit(long code)
+void dead_special_task(void);
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+
+	dead_special_task();
 
 	/*
 	 * We can get here from a kernel oops, sometimes with preemption off.
