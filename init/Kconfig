@@ -1323,11 +1323,19 @@ config SCHED_TUNE
 config RT_SOFTINT_OPTIMIZATION
 	bool "Improve RT scheduling during long softint execution"
 	depends on ARM64 && SMP
-	help
+        help
 	 Enable an optimization which tries to avoid placing RT tasks on CPUs
 	 occupied by nonpreemptible tasks, such as a long softint, or CPUs
 	 which may soon block preemptions, such as a CPU running a ksoftirq
 	 thread which handles slow softints.
+
+config SCHED_TUNE_DUMMY
+	bool "Dummy SCHEDTUNE nodes"
+	depends on SMP
+	depends on !SCHED_TUNE && !CGROUP_SCHEDTUNE
+	default y
+	help
+	  Create dummy SCHEDTUNE nodes to satisfy rom compability.
 
 config UCLAMP_ASSIST
 	bool "UClamp configuration helper"

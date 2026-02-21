@@ -858,8 +858,8 @@ void profile_task_exit(struct task_struct *tsk)
 }
 #endif
 
-void do_exit(long code)
 void dead_special_task(void);
+void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
