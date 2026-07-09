@@ -32,6 +32,7 @@ struct cass_cpu_cand {
 	unsigned long cap_max;
 	unsigned long cap_no_therm;
 	unsigned long cap_orig;
+	unsigned long cap_actual;
 	unsigned long therm_press;
 	unsigned long eff_util;
 	unsigned long hard_util;
@@ -97,10 +98,6 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	unsigned long hyst;
 	long util_diff;
 
-	/* Prefer the CPU that fits the task */
-	if (cass_cmp(fits_capacity(p_util, a->cap),
-		     fits_capacity(p_util, b->cap)))
-
 	/* Prefer the CPU that's not overloaded */
 	if (cass_cmp((u64)b->eff_util * a->cap_max,
 		     (u64)a->eff_util * b->cap_max))
@@ -110,6 +107,15 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	if (b->eff_util > b->cap_max && a->eff_util > a->cap_max &&
 	    cass_cmp(b->eff_util * SCHED_CAPACITY_SCALE / b->cap_max,
 		     a->eff_util * SCHED_CAPACITY_SCALE / a->cap_max))
+		goto done;
+
+	/* Prefer the CPU that fits the task */
+	if (cass_cmp(fits_capacity(p_util, a->cap),
+		     fits_capacity(p_util, b->cap)))
+		goto done;
+
+	/* Prefer the CPU with higher actual capacity */
+	if (cass_cmp(a->cap_actual, b->cap_actual))
 		goto done;
 
 	/* Prefer the CPU with lower relative utilization */
@@ -157,10 +163,6 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 
 	/* Prefer the current CPU for sync wakes */
 	if (sync && (cass_eq(a->cpu, this_cpu) || !cass_cmp(b->cpu, this_cpu)))
-		goto done;
-
-	/* Prefer the CPU with higher capacity */
-	if (cass_cmp(a->cap, b->cap))
 		goto done;
 
 	/* Prefer the previous CPU */
@@ -233,7 +235,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		struct rq *rq = cpu_rq(cpu);
 
 		/* Get the original, maximum _possible_ capacity of this CPU */
-		curr->cap_orig = arch_scale_cpu_capacity(cpu);
+		curr->cap_orig = arch_scale_cpu_capacity(sd, cpu);
 
 		/* Get the _current_, throttled maximum capacity of this CPU */
 		curr->cap_max = curr->cap_orig - thermal_load_avg(rq);
@@ -241,6 +243,9 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 			curr->therm_press = 0;
 		else
 			curr->therm_press = curr->cap_orig - curr->cap_max;
+
+		/* Actual available capacity after thermal pressure */
+		curr->cap_actual = curr->cap_orig - curr->therm_press;
 
 		/* Prefer the CPU that more closely meets the uclamp minimum */
 		if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
