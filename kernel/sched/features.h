@@ -108,11 +108,6 @@
 #define SCHED_FEAT_EAS_PREFER_IDLE 1
 
 /*
- * Request max frequency from schedutil whenever a RT task is running.
- */
-#define SCHED_FEAT_SUGOV_RT_MAX_FREQ 0
-
-/*
  * Apply schedtune boost hold to tasks of all sched classes.
  * If enabled, schedtune will hold the boost applied to a CPU
  * for 50ms regardless of task activation - if the task is
