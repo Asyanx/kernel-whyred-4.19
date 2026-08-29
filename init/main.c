@@ -148,26 +148,17 @@ static char *static_command_line;
 static char *execute_command;
 static char *ramdisk_execute_command;
 
-int enable_cpuoc = 0;
+bool enable_cpuoc = false;
 static int __init set_cpu_overclock(char *val)
 {
-	unsigned int option;
+	unsigned int temp;
 
-	get_option(&val, &option);
+	get_option(&val, &temp);
 
-	switch (option) {
-		case 1:
-			enable_cpuoc = 1;
-			pr_info("kernel: CPU is overclocked to 2.2Ghz\n");
-			break;
-		case 2:
-			enable_cpuoc = 2;
-			pr_info("kernel: CPU is overclocked to 2.4Ghz\n");
-			break;
-		default:
-			pr_err("Unexpected error in set_cpu_overclock\n");
-			return -EINVAL;
-		}
+	if (temp) {
+		enable_cpuoc = true;
+		pr_info("Kernel: CPU overclock is enabled\n");
+	}
 
 	return 0;
 }
