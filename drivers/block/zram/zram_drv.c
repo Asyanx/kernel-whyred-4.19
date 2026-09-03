@@ -1722,7 +1722,9 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 							comp_len_new);
 
 		/* Continue until we make progress */
-		if (class_index_new >= class_index_old ||
+		if (comp_len_new >= huge_class_size ||
+		    comp_len_new >= comp_len_old ||
+		    class_index_new >= class_index_old ||
 		    (threshold && comp_len_new >= threshold)) {
 			zcomp_stream_put(zram->comps[prio]);
 			continue;
@@ -1745,7 +1747,9 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 	 * that would save memory, mark the object as incompressible so that
 	 * we will not try to compress it again.
 	 */
-	if (class_index_new >= class_index_old) {
+	if (comp_len_new >= huge_class_size ||
+	    comp_len_new >= comp_len_old ||
+	    class_index_new >= class_index_old) {
 		zram_set_flag(zram, index, ZRAM_INCOMPRESSIBLE);
 		return 0;
 	}
