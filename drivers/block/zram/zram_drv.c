@@ -1674,7 +1674,6 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 	unsigned int comp_len_new;
 	unsigned int class_index_old;
 	unsigned int class_index_new;
-	u32 num_recomps = 0;
 	void *src, *dst;
 	int ret;
 
@@ -1709,7 +1708,6 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 		if (prio <= zram_get_priority(zram, index))
 			continue;
 
-		num_recomps++;
 		zstrm = zcomp_stream_get(zram->comps[prio]);
 		src = kmap_atomic(page);
 		ret = zcomp_compress(zstrm, src, &comp_len_new);
@@ -1742,19 +1740,13 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 	if (!zstrm)
 		return 0;
 
+	/*
+	 * All secondary algorithms failed to re-compress the page in a way
+	 * that would save memory, mark the object as incompressible so that
+	 * we will not try to compress it again.
+	 */
 	if (class_index_new >= class_index_old) {
-		/*
-		 * Secondary algorithms failed to re-compress the page
-		 * in a way that would save memory, mark the object as
-		 * incompressible so that we will not try to compress
-		 * it again.
-		 *
-		 * We need to make sure that all secondary algorithms have
-		 * failed, so we test if the number of recompressions matches
-		 * the number of active secondary algorithms.
-		 */
-		if (num_recomps == zram->num_active_comps - 1)
-			zram_set_flag(zram, index, ZRAM_INCOMPRESSIBLE);
+		zram_set_flag(zram, index, ZRAM_INCOMPRESSIBLE);
 		return 0;
 	}
 
@@ -1803,11 +1795,10 @@ static ssize_t recompress_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t len)
 {
-	u32 prio = ZRAM_SECONDARY_COMP, prio_max = ZRAM_MAX_COMPS;
 	struct zram *zram = dev_to_zram(dev);
+	u32 mode = 0, threshold = 0, prio = ZRAM_SECONDARY_COMP;
 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
-	char *args, *param, *val, *algo = NULL;
-	u32 mode = 0, threshold = 0;
+	char *args, *param, *val;
 	unsigned long index;
 	struct page *page;
 	ssize_t ret;
@@ -1839,11 +1830,6 @@ static ssize_t recompress_store(struct device *dev,
 				return ret;
 			continue;
 		}
-
-		if (!strcmp(param, "algo")) {
-			algo = val;
-			continue;
-		}
 	}
 
 	if (threshold >= huge_class_size)
@@ -1853,26 +1839,6 @@ static ssize_t recompress_store(struct device *dev,
 	if (!init_done(zram)) {
 		ret = -EINVAL;
 		goto release_init_lock;
-	}
-
-	if (algo) {
-		bool found = false;
-
-		for (; prio < ZRAM_MAX_COMPS; prio++) {
-			if (!zram->comp_algs[prio])
-				continue;
-
-			if (!strcmp(zram->comp_algs[prio], algo)) {
-				prio_max = min(prio + 1, ZRAM_MAX_COMPS);
-				found = true;
-				break;
-			}
-		}
-
-		if (!found) {
-			ret = -EINVAL;
-			goto release_init_lock;
-		}
 	}
 
 	page = alloc_page(GFP_KERNEL);
@@ -1905,7 +1871,7 @@ static ssize_t recompress_store(struct device *dev,
 			goto next;
 
 		err = zram_recompress(zram, index, page, threshold,
-				      prio, prio_max);
+				      prio, ZRAM_MAX_COMPS);
 next:
 		zram_slot_unlock(zram, index);
 		if (err) {
@@ -2148,7 +2114,6 @@ static void zram_destroy_comps(struct zram *zram)
 		if (!comp)
 			continue;
 		zcomp_destroy(comp);
-		zram->num_active_comps--;
 	}
 }
 
@@ -2218,7 +2183,6 @@ static ssize_t disksize_store(struct device *dev,
 		}
 
 		zram->comps[prio] = comp;
-		zram->num_active_comps++;
 	}
 	zram->disksize = disksize;
 	set_capacity_and_notify(zram->disk, zram->disksize >> SECTOR_SHIFT);
