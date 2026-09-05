@@ -51,7 +51,6 @@ int32_t update_firmware_request(char *filename)
 {
 	int32_t ret = 0;
 
-	LOG_ENTRY();
 	if (NULL == filename) {
 		return -1;
 	}
@@ -77,7 +76,6 @@ int32_t update_firmware_request(char *filename)
 		return -EINVAL;
 	}
 
-	LOG_DONE();
 	return 0;
 }
 
@@ -90,12 +88,10 @@ n.a.
  *******************************************************/
 void update_firmware_release(void)
 {
-	LOG_ENTRY();
 	if (fw_entry) {
 		release_firmware(fw_entry);
 	}
 	fw_entry=NULL;
-	LOG_DONE();
 }
 
 /*******************************************************
@@ -111,7 +107,6 @@ int32_t Check_FW_Ver(void)
 	uint8_t buf[16] = {0};
 	int32_t ret = 0;
 
-	LOG_ENTRY();
 
 	buf[0] = 0xFF;
 	buf[1] = (ts->mmap->EVENT_BUF_ADDR >> 16) & 0xFF;
@@ -142,13 +137,59 @@ int32_t Check_FW_Ver(void)
 		return 0;
 	}
 
-	LOG_DONE();
-
 
 	if (buf[1] > fw_entry->data[FW_BIN_VER_OFFSET])
 		return 1;
 	else
 		return 0;
+}
+
+/*******************************************************
+Description:
+Novatek touchscreen resume from deep power down function.
+
+return:
+Executive outcomes. 0---succeed. negative---failed.
+ *******************************************************/
+int32_t Resume_PD(void)
+{
+	uint8_t buf[8] = {0};
+	int32_t ret = 0;
+	int32_t retry = 0;
+
+
+	buf[0] = 0x00;
+	buf[1] = 0xAB;
+	ret = CTP_I2C_WRITE(ts->client, I2C_HW_Address, buf, 2);
+	if (ret < 0) {
+		NVT_ERR("Write Enable error!!(%d)\n", ret);
+		return ret;
+	}
+
+
+	retry = 0;
+	while(1) {
+		msleep(1);
+		buf[0] = 0x00;
+		buf[1] = 0x00;
+		ret = CTP_I2C_READ(ts->client, I2C_HW_Address, buf, 2);
+		if (ret < 0) {
+			NVT_ERR("Check 0xAA (Resume Command) error!!(%d)\n", ret);
+			return ret;
+		}
+		if (buf[1] == 0xAA) {
+			break;
+		}
+		retry++;
+		if (unlikely(retry > 20)) {
+			NVT_ERR("Check 0xAA (Resume Command) error!! status=0x%02X\n", buf[1]);
+			return -1;
+		}
+	}
+	msleep(10);
+
+	NVT_LOG("Resume PD OK\n");
+	return 0;
 }
 
 /*******************************************************
@@ -172,7 +213,6 @@ int32_t Check_CheckSum(void)
 	size_t len_in_blk = 0;
 	int32_t retry = 0;
 
-	LOG_ENTRY();
 	if (Resume_PD()) {
 		NVT_ERR("Resume PD error!!\n");
 		return -1;
@@ -252,8 +292,61 @@ int32_t Check_CheckSum(void)
 	}
 
 	NVT_LOG("firmware checksum match\n");
-	LOG_DONE();
 	return 1;
+}
+
+/*******************************************************
+Description:
+Novatek touchscreen initial bootloader and flash
+block function.
+
+return:
+Executive outcomes. 0---succeed. negative---failed.
+ *******************************************************/
+int32_t Init_BootLoader(void)
+{
+	uint8_t buf[64] = {0};
+	int32_t ret = 0;
+	int32_t retry = 0;
+
+
+	nvt_sw_reset_idle();
+
+
+	buf[0] = 0x00;
+	buf[1] = 0x00;
+	buf[2] = I2C_FW_Address;
+	ret = CTP_I2C_WRITE(ts->client, I2C_HW_Address, buf, 3);
+	if (ret < 0) {
+		NVT_ERR("Inittial Flash Block error!!(%d)\n", ret);
+		return ret;
+	}
+
+
+	retry = 0;
+	while(1) {
+		msleep(1);
+		buf[0] = 0x00;
+		buf[1] = 0x00;
+		ret = CTP_I2C_READ(ts->client, I2C_HW_Address, buf, 2);
+		if (ret < 0) {
+			NVT_ERR("Check 0xAA (Inittial Flash Block) error!!(%d)\n", ret);
+			return ret;
+		}
+		if (buf[1] == 0xAA) {
+			break;
+		}
+		retry++;
+		if (unlikely(retry > 20)) {
+			NVT_ERR("Check 0xAA (Inittial Flash Block) error!! status=0x%02X\n", buf[1]);
+			return -1;
+		}
+	}
+
+	NVT_LOG("Init OK \n");
+	msleep(20);
+
+	return 0;
 }
 
 /*******************************************************
@@ -272,7 +365,6 @@ int32_t Erase_Flash(void)
 	int32_t Flash_Address = 0;
 	int32_t retry = 0;
 
-	LOG_ENTRY();
 
 	buf[0] = 0x00;
 	buf[1] = 0x06;
@@ -465,7 +557,6 @@ int32_t Erase_Flash(void)
 	}
 
 	NVT_LOG("Erase OK \n");
-	LOG_DONE();
 	return 0;
 }
 
@@ -487,7 +578,6 @@ int32_t Write_Flash(void)
 	int32_t ret = 0;
 	int32_t retry = 0;
 
-	LOG_ENTRY();
 
 	buf[0] = 0xFF;
 	buf[1] = XDATA_Addr >> 16;
@@ -636,7 +726,6 @@ int32_t Write_Flash(void)
 
 	NVT_LOG("Programming...%2d%%\r", 100);
 	NVT_LOG("Program OK         \n");
-	LOG_DONE();
 	return 0;
 }
 
@@ -661,7 +750,6 @@ int32_t Verify_Flash(void)
 	size_t len_in_blk = 0;
 	int32_t retry = 0;
 
-	LOG_ENTRY();
 	fw_bin_size = fw_entry->size;
 
 	for (i = 0; i < BLOCK_64KB_NUM; i++) {
@@ -736,7 +824,6 @@ int32_t Verify_Flash(void)
 	}
 
 	NVT_LOG("Verify OK \n");
-	LOG_DONE();
 	return 0;
 }
 
@@ -751,7 +838,6 @@ int32_t Update_Firmware(void)
 {
 	int32_t ret = 0;
 
-	LOG_ENTRY();
 
 	nvt_stop_crc_reboot();
 
@@ -789,7 +875,6 @@ int32_t Update_Firmware(void)
 	nvt_bootloader_reset();
 	nvt_check_fw_reset_state(RESET_STATE_INIT);
 
-	LOG_DONE();
 	return ret;
 }
 
@@ -808,7 +893,6 @@ int32_t nvt_check_flash_end_flag(void)
 	uint8_t nvt_end_flag[NVT_FLASH_END_FLAG_LEN + 1] = {0};
 	int32_t ret = 0;
 
-	LOG_ENTRY();
 
 	ret = Init_BootLoader();
 	if (ret) {
@@ -885,11 +969,9 @@ int32_t nvt_check_flash_end_flag(void)
 	NVT_LOG("nvt_end_flag=%s (%02X %02X %02X)\n", nvt_end_flag, buf[3], buf[4], buf[5]);
 
 	if (strncmp(nvt_end_flag, "NVT", 3) == 0) {
-		LOG_DONE();
 		return 0;
 	} else {
 		NVT_ERR("\"NVT\" end flag not found!\n");
-		LOG_DONE();
 		return 1;
 	}
 }
@@ -907,7 +989,6 @@ void Boot_Update_Firmware(struct work_struct *work)
 	int32_t ret = 0;
 
 	char firmware_name[256] = "";
-	LOG_ENTRY();
 
 
 	/* add by yangjiangzhu compatible to shenchao and tianma TP FW  2018/3/16  start */
@@ -972,7 +1053,5 @@ void Boot_Update_Firmware(struct work_struct *work)
 	nvt_get_fw_info();
 
 	ts->touch_state = TOUCH_STATE_WORKING;
-
-	LOG_DONE();
 }
 #endif /* BOOT_UPDATE_FIRMWARE */

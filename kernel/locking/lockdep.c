@@ -3741,7 +3741,7 @@ static int check_wait_context(struct task_struct *curr, struct held_lock *next)
 		/*
 		 * Check if force_irqthreads will run us threaded.
 		 */
-		if (curr->hardirq_threaded)
+		if (curr->hardirq_threaded || curr->irq_config)
 			curr_inner = LD_WAIT_CONFIG;
 		else
 			curr_inner = LD_WAIT_SPIN;
@@ -3819,8 +3819,10 @@ void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
 		 * for a non static key
 		 */
 		lock->key = key;
-		if (debug_locks)
-			printk("BUG: key %px not in .data!\n", key);
+		printk(KERN_ERR "BUG: key %px has not been registered!\n", key);
+		/*
+		 * What it says above ^^^^^, I suggest you read it.
+		 */
 		lockdep_warn_on(1);
 		return;
 	}
@@ -3969,7 +3971,7 @@ static int __lock_acquire(struct lockdep_map *lock, unsigned int subclass,
 
 	class_idx = class - lock_classes;
 
-	if (depth) {
+	if (depth) { /* we're holding locks */
 		hlock = curr->held_locks + depth - 1;
 		if (hlock->class_idx == class_idx && nest_lock) {
 			if (!references)

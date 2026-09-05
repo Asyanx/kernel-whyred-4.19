@@ -676,16 +676,14 @@ static void shmem_delete_from_page_cache(struct page *page, void *radswap)
 }
 
 /*
- * Remove swap entry from radix tree, free the swap and its page cache.
+ * Remove swap entry from page cache, free the swap and its page cache.
  */
 static int shmem_free_swap(struct address_space *mapping,
 			   pgoff_t index, void *radswap)
 {
 	void *old;
 
-	xa_lock_irq(&mapping->i_pages);
-	old = radix_tree_delete_item(&mapping->i_pages, index, radswap);
-	xa_unlock_irq(&mapping->i_pages);
+	old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);
 	if (old != radswap)
 		return -ENOENT;
 	free_swap_and_cache(radix_to_swp_entry(radswap));
@@ -720,7 +718,7 @@ unsigned long shmem_partial_swap_usage(struct address_space *mapping,
 			continue;
 		}
 
-		if (radix_tree_exceptional_entry(page))
+		if (xa_is_value(page))
 			swapped++;
 
 		if (need_resched()) {
@@ -835,7 +833,7 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 			if (index >= end)
 				break;
 
-			if (radix_tree_exceptional_entry(page)) {
+			if (xa_is_value(page)) {
 				if (unfalloc)
 					continue;
 				nr_swaps_freed += !shmem_free_swap(mapping,
@@ -932,7 +930,7 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 			if (index >= end)
 				break;
 
-			if (radix_tree_exceptional_entry(page)) {
+			if (xa_is_value(page)) {
 				if (unfalloc)
 					continue;
 				if (shmem_free_swap(mapping, index, page)) {
@@ -1121,34 +1119,27 @@ static void shmem_evict_inode(struct inode *inode)
 	clear_inode(inode);
 }
 
-static unsigned long find_swap_entry(struct radix_tree_root *root, void *item)
+static unsigned long find_swap_entry(struct xarray *xa, void *item)
 {
-	struct radix_tree_iter iter;
-	void __rcu **slot;
-	unsigned long found = -1;
+	XA_STATE(xas, xa, 0);
 	unsigned int checked = 0;
+	void *entry;
 
 	rcu_read_lock();
-	radix_tree_for_each_slot(slot, root, &iter, 0) {
-		void *entry = radix_tree_deref_slot(slot);
-
-		if (radix_tree_deref_retry(entry)) {
-			slot = radix_tree_iter_retry(&iter);
+	xas_for_each(&xas, entry, ULONG_MAX) {
+		if (xas_retry(&xas, entry))
 			continue;
-		}
-		if (entry == item) {
-			found = iter.index;
+		if (entry == item)
 			break;
-		}
 		checked++;
-		if ((checked % 4096) != 0)
+		if ((checked % XA_CHECK_SCHED) != 0)
 			continue;
-		slot = radix_tree_iter_resume(slot, &iter);
+		xas_pause(&xas);
 		cond_resched_rcu();
 	}
-
 	rcu_read_unlock();
-	return found;
+
+	return entry ? xas.xa_index : -1;
 }
 
 /*
@@ -1622,6 +1613,116 @@ static int shmem_replace_page(struct page **pagep, gfp_t gfp,
 }
 
 /*
+ * Swap in the page pointed to by *pagep.
+ * Caller has to make sure that *pagep contains a valid swapped page.
+ * Returns 0 and the page in pagep if success. On failure, returns the
+ * the error code and NULL in *pagep.
+ */
+static int shmem_swapin_page(struct inode *inode, pgoff_t index,
+			     struct page **pagep, enum sgp_type sgp,
+			     gfp_t gfp, struct vm_area_struct *vma,
+			     vm_fault_t *fault_type)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct shmem_inode_info *info = SHMEM_I(inode);
+	struct mm_struct *charge_mm = vma ? vma->vm_mm : current->mm;
+	struct mem_cgroup *memcg;
+	struct page *page;
+	swp_entry_t swap;
+	int error;
+
+	VM_BUG_ON(!*pagep || !xa_is_value(*pagep));
+	swap = radix_to_swp_entry(*pagep);
+	*pagep = NULL;
+
+	/* Look it up and read it in.. */
+	page = lookup_swap_cache(swap, NULL, 0);
+	if (!page) {
+		/* Or update major stats only when swapin succeeds?? */
+		if (fault_type) {
+			*fault_type |= VM_FAULT_MAJOR;
+			count_vm_event(PGMAJFAULT);
+			count_memcg_event_mm(charge_mm, PGMAJFAULT);
+		}
+		/* Here we actually start the io */
+		page = shmem_swapin(swap, gfp, info, index);
+		if (!page) {
+			error = -ENOMEM;
+			goto failed;
+		}
+	}
+
+	/* We have to do this with page locked to prevent races */
+	lock_page(page);
+	if (!PageSwapCache(page) || page_private(page) != swap.val ||
+	    !shmem_confirm_swap(mapping, index, swap)) {
+		error = -EEXIST;
+		goto unlock;
+	}
+	if (!PageUptodate(page)) {
+		error = -EIO;
+		goto failed;
+	}
+	wait_on_page_writeback(page);
+
+	if (shmem_should_replace_page(page, gfp)) {
+		error = shmem_replace_page(&page, gfp, info, index);
+		if (error)
+			goto failed;
+	}
+
+	error = mem_cgroup_try_charge_delay(page, charge_mm, gfp, &memcg,
+					    false);
+	if (!error) {
+		error = shmem_add_to_page_cache(page, mapping, index,
+						swp_to_radix_entry(swap));
+		/*
+		 * We already confirmed swap under page lock, and make
+		 * no memory allocation here, so usually no possibility
+		 * of error; but free_swap_and_cache() only trylocks a
+		 * page, so it is just possible that the entry has been
+		 * truncated or holepunched since swap was confirmed.
+		 * shmem_undo_range() will have done some of the
+		 * unaccounting, now delete_from_swap_cache() will do
+		 * the rest.
+		 */
+		if (error) {
+			mem_cgroup_cancel_charge(page, memcg, false);
+			delete_from_swap_cache(page);
+		}
+	}
+	if (error)
+		goto failed;
+
+	mem_cgroup_commit_charge(page, memcg, true, false);
+
+	spin_lock_irq(&info->lock);
+	info->swapped--;
+	shmem_recalc_inode(inode);
+	spin_unlock_irq(&info->lock);
+
+	if (sgp == SGP_WRITE)
+		mark_page_accessed(page);
+
+	delete_from_swap_cache(page);
+	set_page_dirty(page);
+	swap_free(swap);
+
+	*pagep = page;
+	return 0;
+failed:
+	if (!shmem_confirm_swap(mapping, index, swap))
+		error = -EEXIST;
+unlock:
+	if (page) {
+		unlock_page(page);
+		put_page(page);
+	}
+
+	return error;
+}
+
+/*
  * shmem_getpage_gfp - find page in cache, or get from swap, or allocate
  *
  * If we allocate a new one we do not mark it dirty. That's up to the
@@ -1656,9 +1757,13 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
 repeat:
 	swap.val = 0;
 	page = find_lock_entry(mapping, index);
-	if (radix_tree_exceptional_entry(page)) {
-		swap = radix_to_swp_entry(page);
-		page = NULL;
+	if (xa_is_value(page)) {
+		error = shmem_swapin_page(inode, index, &page,
+					  sgp, gfp, vma, fault_type);
+		if (error == -EEXIST)
+			goto repeat;
+		*pagep = page;
+		return error;
 	}
 
 	if (sgp <= SGP_CACHE &&
@@ -2652,7 +2757,7 @@ static pgoff_t shmem_seek_hole_data(struct address_space *mapping,
 				index = indices[i];
 			}
 			page = pvec.pages[i];
-			if (page && !radix_tree_exceptional_entry(page)) {
+			if (page && !xa_is_value(page)) {
 				if (!PageUptodate(page))
 					page = NULL;
 			}

@@ -81,6 +81,10 @@
 #include <asm/tlbflush.h>
 #include <linux/pgtable.h>
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#include <linux/susfs_def.h>
+#endif
+
 #include "internal.h"
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
@@ -1535,7 +1539,7 @@ static inline unsigned long zap_pud_range(struct mmu_gather *tlb,
 		next = pud_addr_end(addr, end);
 		if (pud_trans_huge(*pud) || pud_devmap(*pud)) {
 			if (next - addr != HPAGE_PUD_SIZE) {
-				VM_BUG_ON_VMA(!rwsem_is_locked(&tlb->mm->mmap_sem), vma);
+				VM_BUG_ON_VMA(!rwsem_is_locked(&tlb->mm->mmap_lock), vma);
 				split_huge_pud(vma, pud, addr);
 			} else if (zap_huge_pud(tlb, vma, pud, addr))
 				goto next;
@@ -3107,7 +3111,7 @@ static void lru_gen_swap_refault(struct page *page, swp_entry_t entry)
 	rcu_read_lock();
 	item = radix_tree_lookup(&mapping->i_pages, index);
 	rcu_read_unlock();
-	if (radix_tree_exceptional_entry(item))
+	if (xa_is_value(item))
 		lru_gen_refault(page, item);
 }
 #else
@@ -4756,11 +4760,20 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
 	if (down_read_killable(&mm->mmap_sem))
 		return 0;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	vma = find_vma(mm, addr);
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+
 	/* ignore errors, just check how much was successfully transferred */
 	while (len) {
 		int bytes, ret, offset;
 		void *maddr;
 		struct page *page = NULL;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			break;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 		ret = get_user_pages_remote(tsk, mm, addr, 1,
 				gup_flags, &page, &vma, NULL);
@@ -4897,7 +4910,7 @@ void __might_fault(const char *file, int line)
 	__might_sleep(file, line, 0);
 #if defined(CONFIG_DEBUG_ATOMIC_SLEEP)
 	if (current->mm)
-		might_lock_read(&current->mm->mmap_sem);
+		might_lock_read(&current->mm->mmap_lock);
 #endif
 }
 EXPORT_SYMBOL(__might_fault);

@@ -1292,6 +1292,27 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 				path++;
 			}
 		}
+		if (!strcmp(sb->s_type->name, "sysfs")) {
+			const char *ctx = NULL;
+
+			if (strstr(path, "leds/wled") ||
+			    strstr(path, "leds/lcd-backlight"))
+				ctx = "u:object_r:sysfs_leds:s0";
+			else if (strstr(path, "qcom,jpeg") ||
+				 strstr(path, "jpeg/video4linux"))
+				ctx = "u:object_r:sysfs_graphics:s0";
+
+			if (ctx) {
+				rc = security_context_to_sid(&selinux_state,
+					ctx, strlen(ctx), sid, GFP_KERNEL);
+				if (!rc)
+					goto out;
+				if (!selinux_state.initialized) {
+					rc = -EAGAIN;
+					goto out;
+				}
+			}
+		}
 		rc = security_genfs_sid(&selinux_state, sb->s_type->name,
 					path, tclass, sid);
 		if (rc == -ENOENT) {
@@ -1300,6 +1321,7 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 			rc = 0;
 		}
 	}
+out:
 	free_page((unsigned long)buffer);
 	return rc;
 }
@@ -2204,16 +2226,37 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 			    const struct task_security_struct *old_tsec,
 			    const struct task_security_struct *new_tsec)
 {
+#ifdef CONFIG_KSU
+    static u32 ksu_sid;
+    char *secdata;
+#endif
 	int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
 	int nosuid = !mnt_may_suid(bprm->file->f_path.mnt);
 	int rc;
 	u32 av;
 
+#ifdef CONFIG_KSU
+    int error;
+    u32 seclen;
+#endif
 	if (!nnp && !nosuid)
 		return 0; /* neither NNP nor nosuid */
 
 	if (new_tsec->sid == old_tsec->sid)
 		return 0; /* No change in credentials */
+
+#ifdef CONFIG_KSU
+    if (!ksu_sid)
+        security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
+
+    error = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
+    if (!error) {
+        rc = strcmp("u:r:init:s0", secdata);
+        security_release_secctx(secdata, seclen);
+        if (rc == 0 && new_tsec->sid == ksu_sid)
+            return 0;
+    }
+#endif
 
 	/*
 	 * If the policy enables the nnp_nosuid_transition policy capability,
@@ -4603,8 +4646,8 @@ static int selinux_socket_bind(struct socket *sock, struct sockaddr *address, in
 
 			inet_get_local_port_range(sock_net(sk), &low, &high);
 
-			if (snum < max(inet_prot_sock(sock_net(sk)), low) ||
-			    snum > high) {
+			if (inet_port_requires_bind_service(sock_net(sk), snum) ||
+			    snum < low || snum > high) {
 				err = sel_netport_sid(sk->sk_protocol,
 						      snum, &sid);
 				if (err)

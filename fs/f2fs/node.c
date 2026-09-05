@@ -365,7 +365,6 @@ void f2fs_del_fsync_node_entry(struct f2fs_sb_info *sbi, struct page *page)
 		}
 	}
 	spin_unlock_irqrestore(&sbi->fsync_node_lock, flags);
-	f2fs_bug_on(sbi, 1);
 }
 
 void f2fs_reset_fsync_node_info(struct f2fs_sb_info *sbi)
@@ -950,7 +949,7 @@ static int truncate_dnode(struct dnode_of_data *dn)
 
 	/* get direct node */
 	page = f2fs_get_node_page(F2FS_I_SB(dn->inode), dn->nid);
-	if (IS_ERR(page) && PTR_ERR(page) == -ENOENT)
+	if (PTR_ERR(page) == -ENOENT)
 		return 1;
 	else if (IS_ERR(page))
 		return PTR_ERR(page);
