@@ -92,3 +92,7 @@ vdso.so: $(obj)/vdso.so.dbg
 	$(call cmd,vdso_install)
 
 vdso_install: vdso.so
+
+# Filter out LLVM and Polly flags to prevent GNU ld from parsing -mllvm as -m llvm
+LDFLAGS_vdso := $(filter-out -mllvm -polly% -polly, $(LDFLAGS_vdso))
+KBUILD_LDFLAGS := $(filter-out -mllvm -polly% -polly, $(KBUILD_LDFLAGS))
